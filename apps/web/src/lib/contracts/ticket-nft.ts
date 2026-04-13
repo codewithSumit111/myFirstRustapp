@@ -117,6 +117,18 @@ export const TICKET_NFT_ABI = [
     stateMutability: 'view',
   },
 
+  // Get global statistics
+  {
+    type: 'function',
+    name: 'getGlobalStats',
+    inputs: [],
+    outputs: [
+      { name: 'totalMinted', type: 'uint256' },
+      { name: 'totalUsed', type: 'uint256' },
+    ],
+    stateMutability: 'view',
+  },
+
   // Get tokens owned by address
   {
     type: 'function',

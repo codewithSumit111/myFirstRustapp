@@ -228,6 +228,11 @@ export function useTicketContract() {
         return { isValid: false, ticket, owner, message: 'Ticket has already been used', status: 'used' };
       }
 
+      // Verify ownership
+      if (payload.walletAddress && owner.toLowerCase() !== payload.walletAddress.toLowerCase()) {
+        return { isValid: false, ticket, owner, message: 'Ownership mismatch (Invalid Ticket)', status: 'error' };
+      }
+
       // Verify event data matches
       if (ticket.eventId.toString() !== payload.eventId) {
         return { isValid: false, ticket, owner, message: 'Event data mismatch', status: 'error' };
@@ -252,12 +257,36 @@ export function useTicketContract() {
   const generateQRPayload = useCallback((ticket: Ticket): QRPayload => {
     return {
       tokenId: ticket.tokenId.toString(),
+      walletAddress: address || ticket.originalOwner,
       eventId: ticket.eventId.toString(),
       eventName: ticket.eventName,
       contractAddress: TICKET_NFT_ADDRESS,
       chainId: CHAIN_ID,
     };
-  }, []);
+  }, [address]);
+
+  /**
+   * Get global smart contract statistics
+   */
+  const getGlobalStats = useCallback(async (): Promise<{ totalMinted: number, totalUsed: number } | null> => {
+    if (!publicClient) return null;
+
+    try {
+      const result = await publicClient.readContract({
+        address: TICKET_NFT_ADDRESS,
+        abi: TICKET_NFT_ABI,
+        functionName: 'getGlobalStats',
+      }) as [bigint, bigint];
+
+      return {
+        totalMinted: Number(result[0]),
+        totalUsed: Number(result[1]),
+      };
+    } catch (err) {
+      console.error('getGlobalStats error:', err);
+      return null;
+    }
+  }, [publicClient]);
 
   return {
     // State
@@ -274,6 +303,7 @@ export function useTicketContract() {
     getOwnedTickets,
     verifyTicket,
     generateQRPayload,
+    getGlobalStats,
 
     // Utilities
     clearError: () => setError(null),

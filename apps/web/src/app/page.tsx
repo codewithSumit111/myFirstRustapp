@@ -6,6 +6,7 @@
  */
 
 import Link from 'next/link';
+import { DashboardStats } from '@/components/dashboard-stats';
 
 export default function Home() {
   return (
@@ -38,6 +39,9 @@ export default function Home() {
             </Link>
           </div>
         </div>
+
+        {/* ── Global Stats Dashboard ── */}
+        <DashboardStats />
 
         {/* ── Feature Cards ── */}
         <section className="mb-20" id="features-section">

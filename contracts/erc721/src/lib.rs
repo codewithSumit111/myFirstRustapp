@@ -63,8 +63,14 @@ sol_storage! {
         /// Authorized verifiers (event staff)
         mapping(address => bool) verifiers;
 
+        /// Tracks whether an address already holds a ticket (1 per wallet)
+        mapping(address => bool) has_ticket;
+
         /// Contract owner
         address owner;
+
+        /// Track total global checked-in tickets
+        uint256 total_used;
 
         #[borrow] // Allows erc721 to access MyToken's storage and make calls
         Erc721<EventTicketNFTParams> erc721;
@@ -100,6 +106,8 @@ sol! {
     error TicketNotFound(uint256 token_id);
     /// Not the ticket owner
     error NotTicketOwner(uint256 token_id);
+    /// Wallet already holds a ticket (limit: 1 per wallet)
+    error AlreadyHasTicket(address wallet);
 }
 
 /// Represents the ways methods may fail.
@@ -112,6 +120,7 @@ pub enum EventTicketNFTError {
     InvalidEventId(InvalidEventId),
     TicketNotFound(TicketNotFound),
     NotTicketOwner(NotTicketOwner),
+    AlreadyHasTicket(AlreadyHasTicket),
 }
 
 #[public]
@@ -149,11 +158,19 @@ impl EventTicketNFT {
         event_date: Bytes,
         seat_info: Bytes,
     ) -> Result<U256, EventTicketNFTError> {
+        // Enforce 1-ticket-per-wallet limit
+        if self.has_ticket.get(to) {
+            return Err(EventTicketNFTError::AlreadyHasTicket(AlreadyHasTicket { wallet: to }));
+        }
+
         // Get the new token ID before minting
         let token_id = self.erc721.total_supply.get();
         
         // Mint the NFT
         self.erc721.mint(to).map_err(|e| EventTicketNFTError::ExternalCallFailed(ExternalCallFailed {}))?;
+
+        // Mark wallet as having a ticket
+        self.has_ticket.insert(to, true);
         
         // Store ticket data
         let mut ticket = self.tickets.setter(token_id);
@@ -211,6 +228,9 @@ impl EventTicketNFT {
         ticket.is_used.set(true);
         ticket.used_at.set(block::timestamp().into());
         
+        let current_used = self.total_used.get();
+        self.total_used.set(current_used + U256::from(1));
+        
         Ok(())
     }
 
@@ -227,6 +247,13 @@ impl EventTicketNFT {
         Ok(!ticket.is_used.get())
     }
 
+    /// Get global statistics (total minted, total used)
+    pub fn get_global_stats(&self) -> Result<(U256, U256), EventTicketNFTError> {
+        let total_minted = self.erc721.total_supply.get();
+        let total_used = self.total_used.get();
+        Ok((total_minted, total_used))
+    }
+
     /// Get dynamic token URI based on ticket status
     pub fn token_uri(&self, token_id: U256) -> Result<String, EventTicketNFTError> {
         // Verify token exists
@@ -237,12 +264,12 @@ impl EventTicketNFT {
         let event_date = String::from_utf8(ticket.event_date.get().to_vec()).unwrap_or("TBD".to_string());
         let seat_info = String::from_utf8(ticket.seat_info.get().to_vec()).unwrap_or("General Admission".to_string());
         
-        let status = if ticket.is_used.get() { "USED" } else { "VALID" };
+        let status_text = if ticket.is_used.get() { "Attended Event 🎉" } else { "Valid Ticket 🎟️" };
         
         // Build a simple JSON metadata string
         let json = format!(
-            "{{\"name\":\"{} - {}\",\"description\":\"Event ticket for {} on {}\",\"attributes\":[{{\"trait_type\":\"Status\",\"value\":\"{}\"}},{{\"trait_type\":\"Seat\",\"value\":\"{}\"}}]}}",
-            event_name, seat_info, event_name, event_date, status, seat_info
+            "{{\"name\":\"{} - {}\",\"description\":\"{}\",\"attributes\":[{{\"trait_type\":\"Status\",\"value\":\"{}\"}},{{\"trait_type\":\"Event\",\"value\":\"{}\"}},{{\"trait_type\":\"Seat\",\"value\":\"{}\"}}]}}",
+            event_name, seat_info, status_text, status_text, event_name, seat_info
         );
         
         Ok(json)

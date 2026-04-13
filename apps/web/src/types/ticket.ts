@@ -32,6 +32,7 @@ export interface MockEvent {
 /** QR code payload structure */
 export interface QRPayload {
   tokenId: string;
+  walletAddress: string;
   eventId: string;
   eventName: string;
   contractAddress: string;

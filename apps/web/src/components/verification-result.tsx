@@ -33,9 +33,9 @@ export function VerificationResult({
     used: {
       icon: '✕',
       title: 'Already Used',
-      color: '#f43f5e',
-      bgGlow: 'rgba(244, 63, 94, 0.08)',
-      borderColor: 'rgba(244, 63, 94, 0.3)',
+      color: '#f59e0b',
+      bgGlow: 'rgba(245, 158, 11, 0.08)',
+      borderColor: 'rgba(245, 158, 11, 0.3)',
     },
     'not-found': {
       icon: '?',
@@ -135,7 +135,7 @@ export function VerificationResult({
                 </>
               ) : (
                 <>
-                  ✓ Mark as Used (Check-in)
+                  ✓ Verify & Mark Used
                 </>
               )}
             </button>

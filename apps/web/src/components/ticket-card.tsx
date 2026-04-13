@@ -24,6 +24,7 @@ export function TicketCard({ ticket, showQR = true, compact = false }: TicketCar
   // Build QR payload
   const qrPayload: QRPayload = {
     tokenId: ticket.tokenId.toString(),
+    walletAddress: ticket.originalOwner,
     eventId: ticket.eventId.toString(),
     eventName: ticket.eventName,
     contractAddress: TICKET_NFT_ADDRESS,
