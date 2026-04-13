@@ -3,12 +3,16 @@ extern crate alloc;
 // Modules and imports
 mod erc721;
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 /// Import the Stylus SDK along with alloy primitive types for use in our program.
 use stylus_sdk::{
     abi::Bytes,
     call::Call,
     contract,
     msg,
+    block,
     prelude::*,
     alloy_primitives::{Address, U256}
 };
@@ -23,12 +27,23 @@ sol_interface! {
     }
 }
 
-struct RobinhoodNFTParams;
+struct EventTicketNFTParams;
 
 /// Immutable definitions
-impl Erc721Params for RobinhoodNFTParams {
-    const NAME: &'static str = "RobinhoodNFT";
-    const SYMBOL: &'static str = "RHNFT";
+impl Erc721Params for EventTicketNFTParams {
+    const NAME: &'static str = "EventTicketNFT";
+    const SYMBOL: &'static str = "ETNFT";
+}
+
+/// Ticket struct to store event information
+#[derive(Clone)]
+pub struct Ticket {
+    pub event_id: U256,
+    pub event_name: String,
+    pub event_date: String,
+    pub seat_info: String,
+    pub is_used: bool,
+    pub used_at: U256,
 }
 
 // Define the entrypoint as a Solidity storage object. The sol_storage! macro
@@ -36,11 +51,36 @@ impl Erc721Params for RobinhoodNFTParams {
 // storage slots and types.
 sol_storage! {
     #[entrypoint]
-    struct RobinhoodNFT {
+    struct EventTicketNFT {
         address art_contract_address;
 
+        /// Mapping from token ID to ticket data
+        mapping(uint256 => TicketData) tickets;
+
+        /// Mapping from event ID to price
+        mapping(uint256 => uint256) event_prices;
+
+        /// Authorized verifiers (event staff)
+        mapping(address => bool) verifiers;
+
+        /// Contract owner
+        address owner;
+
         #[borrow] // Allows erc721 to access MyToken's storage and make calls
-        Erc721<RobinhoodNFTParams> erc721;
+        Erc721<EventTicketNFTParams> erc721;
+    }
+}
+
+/// Storage structure for ticket data
+sol_storage! {
+    struct TicketData {
+        uint256 event_id;
+        bytes event_name;
+        bytes event_date;
+        bytes seat_info;
+        bool is_used;
+        uint256 used_at;
+        address original_owner;
     }
 }
 
@@ -50,18 +90,191 @@ sol! {
     error AlreadyInitialized();
     /// A call to an external contract failed
     error ExternalCallFailed();
+    /// Ticket has already been used
+    error TicketAlreadyUsed(uint256 token_id);
+    /// Not authorized to verify tickets
+    error NotAuthorized();
+    /// Invalid event ID
+    error InvalidEventId(uint256 event_id);
+    /// Ticket does not exist
+    error TicketNotFound(uint256 token_id);
+    /// Not the ticket owner
+    error NotTicketOwner(uint256 token_id);
 }
 
 /// Represents the ways methods may fail.
 #[derive(SolidityError)]
-pub enum RobinhoodNFTError {
+pub enum EventTicketNFTError {
     AlreadyInitialized(AlreadyInitialized),
     ExternalCallFailed(ExternalCallFailed),
+    TicketAlreadyUsed(TicketAlreadyUsed),
+    NotAuthorized(NotAuthorized),
+    InvalidEventId(InvalidEventId),
+    TicketNotFound(TicketNotFound),
+    NotTicketOwner(NotTicketOwner),
 }
 
 #[public]
-#[inherit(Erc721<RobinhoodNFTParams>)]
-impl RobinhoodNFT {
+#[inherit(Erc721<EventTicketNFTParams>)]
+impl EventTicketNFT {
+    /// Initialize the contract with the deployer as owner
+    pub fn initialize(&mut self) -> Result<(), EventTicketNFTError> {
+        if !self.owner.get().is_zero() {
+            return Err(EventTicketNFTError::AlreadyInitialized(AlreadyInitialized {}));
+        }
+        self.owner.set(msg::sender());
+        Ok(())
+    }
+
+    /// Set event price (only owner)
+    pub fn set_event_price(&mut self, event_id: U256, price: U256) -> Result<(), EventTicketNFTError> {
+        self.require_owner()?;
+        self.event_prices.insert(event_id, price);
+        Ok(())
+    }
+
+    /// Add/remove verifier (only owner)
+    pub fn set_verifier(&mut self, verifier: Address, authorized: bool) -> Result<(), EventTicketNFTError> {
+        self.require_owner()?;
+        self.verifiers.insert(verifier, authorized);
+        Ok(())
+    }
+
+    /// Mint a ticket with event data
+    pub fn mint_ticket(
+        &mut self,
+        to: Address,
+        event_id: U256,
+        event_name: Bytes,
+        event_date: Bytes,
+        seat_info: Bytes,
+    ) -> Result<U256, EventTicketNFTError> {
+        // Get the new token ID before minting
+        let token_id = self.erc721.total_supply.get();
+        
+        // Mint the NFT
+        self.erc721.mint(to).map_err(|e| EventTicketNFTError::ExternalCallFailed(ExternalCallFailed {}))?;
+        
+        // Store ticket data
+        let mut ticket = self.tickets.setter(token_id);
+        ticket.event_id.set(event_id);
+        ticket.event_name.set(event_name.0.into());
+        ticket.event_date.set(event_date.0.into());
+        ticket.seat_info.set(seat_info.0.into());
+        ticket.is_used.set(false);
+        ticket.used_at.set(U256::from(0));
+        ticket.original_owner.set(to);
+        
+        Ok(token_id)
+    }
+
+    /// Get ticket information
+    pub fn get_ticket_info(&self, token_id: U256) -> Result<(U256, Bytes, Bytes, Bytes, bool, U256, Address), EventTicketNFTError> {
+        let ticket = self.tickets.get(token_id);
+        
+        // Check if ticket exists by checking if original_owner is not zero
+        if ticket.original_owner.get().is_zero() {
+            return Err(EventTicketNFTError::TicketNotFound(TicketNotFound { token_id }));
+        }
+        
+        Ok((
+            ticket.event_id.get(),
+            Bytes(ticket.event_name.get().to_vec()),
+            Bytes(ticket.event_date.get().to_vec()),
+            Bytes(ticket.seat_info.get().to_vec()),
+            ticket.is_used.get(),
+            ticket.used_at.get(),
+            ticket.original_owner.get(),
+        ))
+    }
+
+    /// Mark ticket as used (only authorized verifiers)
+    pub fn mark_ticket_used(&mut self, token_id: U256) -> Result<(), EventTicketNFTError> {
+        // Check if caller is authorized
+        if !self.verifiers.get(msg::sender()) && msg::sender() != self.owner.get() {
+            return Err(EventTicketNFTError::NotAuthorized(NotAuthorized {}));
+        }
+        
+        let mut ticket = self.tickets.setter(token_id);
+        
+        // Check if ticket exists
+        if ticket.original_owner.get().is_zero() {
+            return Err(EventTicketNFTError::TicketNotFound(TicketNotFound { token_id }));
+        }
+        
+        // Check if already used
+        if ticket.is_used.get() {
+            return Err(EventTicketNFTError::TicketAlreadyUsed(TicketAlreadyUsed { token_id }));
+        }
+        
+        // Mark as used
+        ticket.is_used.set(true);
+        ticket.used_at.set(block::timestamp().into());
+        
+        Ok(())
+    }
+
+    /// Check if a ticket is valid (not used and exists)
+    pub fn is_ticket_valid(&self, token_id: U256) -> Result<bool, EventTicketNFTError> {
+        let ticket = self.tickets.get(token_id);
+        
+        // Check if ticket exists
+        if ticket.original_owner.get().is_zero() {
+            return Ok(false);
+        }
+        
+        // Ticket is valid if not used
+        Ok(!ticket.is_used.get())
+    }
+
+    /// Get dynamic token URI based on ticket status
+    pub fn token_uri(&self, token_id: U256) -> Result<String, EventTicketNFTError> {
+        // Verify token exists
+        let owner = self.erc721.owner_of(token_id).map_err(|e| EventTicketNFTError::TicketNotFound(TicketNotFound { token_id }))?;
+        
+        let ticket = self.tickets.get(token_id);
+        let event_name = String::from_utf8(ticket.event_name.get().to_vec()).unwrap_or("Unknown Event".to_string());
+        let event_date = String::from_utf8(ticket.event_date.get().to_vec()).unwrap_or("TBD".to_string());
+        let seat_info = String::from_utf8(ticket.seat_info.get().to_vec()).unwrap_or("General Admission".to_string());
+        
+        let status = if ticket.is_used.get() { "USED" } else { "VALID" };
+        
+        // Build a simple JSON metadata string
+        let json = format!(
+            "{{\"name\":\"{} - {}\",\"description\":\"Event ticket for {} on {}\",\"attributes\":[{{\"trait_type\":\"Status\",\"value\":\"{}\"}},{{\"trait_type\":\"Seat\",\"value\":\"{}\"}}]}}",
+            event_name, seat_info, event_name, event_date, status, seat_info
+        );
+        
+        Ok(json)
+    }
+
+    /// Helper to check if caller is owner
+    fn require_owner(&self) -> Result<(), EventTicketNFTError> {
+        if msg::sender() != self.owner.get() {
+            return Err(EventTicketNFTError::NotAuthorized(NotAuthorized {}));
+        }
+        Ok(())
+    }
+
+    /// Get all token IDs owned by an address (helper for frontend)
+    pub fn get_tokens_by_owner(&self, owner: Address) -> Result<Vec<U256>, EventTicketNFTError> {
+        let balance = self.erc721.balance_of(owner).map_err(|e| EventTicketNFTError::ExternalCallFailed(ExternalCallFailed {}))?;
+        let total_supply = self.erc721.total_supply.get();
+        let mut tokens = Vec::new();
+        
+        // Iterate through all tokens to find those owned by the address
+        for token_id in 0..total_supply.as_limbs()[0] {
+            let token_id_u256 = U256::from(token_id);
+            if let Ok(token_owner) = self.erc721.owner_of(token_id_u256) {
+                if token_owner == owner {
+                    tokens.push(token_id_u256);
+                }
+            }
+        }
+        
+        Ok(tokens)
+    }
+
     /// Mints an NFT, but does not call onErc712Received
     pub fn mint(&mut self) -> Result<(), Vec<u8>> {
         let minter = msg::sender();
