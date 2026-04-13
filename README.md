@@ -164,17 +164,33 @@ The `EventTicketNFT` contract extends ERC-721 with ticket-specific features:
 | `setVerifier(address, bool)` | Grant/revoke verifier role (owner only) |
 | `setEventPrice(eventId, price)` | Set ticket price for an event (owner only) |
 
-### Building the Contract
+### 1. Rust Environment Setup
+
+Ensure you have the WebAssembly target and the Arbitrum Stylus CLI installed.
+
+```bash
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+
+# Install the Stylus CLI (locked to avoid newer dependency conflicts)
+cargo install --locked cargo-stylus --version 0.10.2
+```
+
+> **Windows Users:** If you get a `link.exe not found` error during compilation, you must install the [Visual Studio Build Tools](https://aka.ms/vs/17/release/vs_BuildTools.exe) and select the "Desktop development with C++" workload.
+
+### 2. Building the Contract
 
 ```bash
 cd contracts/erc721
 cargo build --release --target wasm32-unknown-unknown
 ```
 
-### Deploying
+### 3. Deploying to Arbitrum Sepolia
+
+Use a testnet private key with some Arbitrum Sepolia ETH (available via public faucets).
 
 ```bash
-cargo stylus deploy --endpoint https://sepolia-rollup.arbitrum.io/rpc --private-key <KEY>
+cargo stylus deploy --endpoint https://sepolia-rollup.arbitrum.io/rpc --private-key <YOUR_PRIVATE_KEY>
 ```
 
 ## 🛠️ Tech Stack

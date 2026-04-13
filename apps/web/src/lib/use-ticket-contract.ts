@@ -67,7 +67,7 @@ export function useTicketContract() {
 
       // Extract token ID from Transfer event logs
       const transferEvent = receipt.logs.find(
-        (log) => log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+        (log: any) => log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
       );
 
       if (transferEvent && transferEvent.topics[3]) {
