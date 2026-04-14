@@ -175,9 +175,9 @@ impl EventTicketNFT {
         // Store ticket data
         let mut ticket = self.tickets.setter(token_id);
         ticket.event_id.set(event_id);
-        ticket.event_name.set(event_name.0.into());
-        ticket.event_date.set(event_date.0.into());
-        ticket.seat_info.set(seat_info.0.into());
+        ticket.event_name.set_bytes(&event_name.0);
+        ticket.event_date.set_bytes(&event_date.0);
+        ticket.seat_info.set_bytes(&seat_info.0);
         ticket.is_used.set(false);
         ticket.used_at.set(U256::from(0));
         ticket.original_owner.set(to);
@@ -196,9 +196,9 @@ impl EventTicketNFT {
         
         Ok((
             ticket.event_id.get(),
-            Bytes(ticket.event_name.get().to_vec()),
-            Bytes(ticket.event_date.get().to_vec()),
-            Bytes(ticket.seat_info.get().to_vec()),
+            Bytes(ticket.event_name.get_bytes()),
+            Bytes(ticket.event_date.get_bytes()),
+            Bytes(ticket.seat_info.get_bytes()),
             ticket.is_used.get(),
             ticket.used_at.get(),
             ticket.original_owner.get(),
@@ -226,7 +226,7 @@ impl EventTicketNFT {
         
         // Mark as used
         ticket.is_used.set(true);
-        ticket.used_at.set(block::timestamp().into());
+        ticket.used_at.set(U256::from(block::timestamp()));
         
         let current_used = self.total_used.get();
         self.total_used.set(current_used + U256::from(1));
@@ -260,9 +260,9 @@ impl EventTicketNFT {
         let owner = self.erc721.owner_of(token_id).map_err(|e| EventTicketNFTError::TicketNotFound(TicketNotFound { token_id }))?;
         
         let ticket = self.tickets.get(token_id);
-        let event_name = String::from_utf8(ticket.event_name.get().to_vec()).unwrap_or("Unknown Event".to_string());
-        let event_date = String::from_utf8(ticket.event_date.get().to_vec()).unwrap_or("TBD".to_string());
-        let seat_info = String::from_utf8(ticket.seat_info.get().to_vec()).unwrap_or("General Admission".to_string());
+        let event_name = String::from_utf8(ticket.event_name.get_bytes()).unwrap_or("Unknown Event".to_string());
+        let event_date = String::from_utf8(ticket.event_date.get_bytes()).unwrap_or("TBD".to_string());
+        let seat_info = String::from_utf8(ticket.seat_info.get_bytes()).unwrap_or("General Admission".to_string());
         
         let status_text = if ticket.is_used.get() { "Attended Event 🎉" } else { "Valid Ticket 🎟️" };
         
@@ -284,47 +284,79 @@ impl EventTicketNFT {
     }
 
     /// Get all token IDs owned by an address (helper for frontend)
+    /// Note: Limited to first 1000 tokens to prevent gas issues in demo
     pub fn get_tokens_by_owner(&self, owner: Address) -> Result<Vec<U256>, EventTicketNFTError> {
-        let balance = self.erc721.balance_of(owner).map_err(|e| EventTicketNFTError::ExternalCallFailed(ExternalCallFailed {}))?;
         let total_supply = self.erc721.total_supply.get();
         let mut tokens = Vec::new();
         
-        // Iterate through all tokens to find those owned by the address
-        for token_id in 0..total_supply.as_limbs()[0] {
-            let token_id_u256 = U256::from(token_id);
-            if let Ok(token_owner) = self.erc721.owner_of(token_id_u256) {
+        // Cap at 1000 for demo safety - prevents U256 truncation issues
+        let max_check = if total_supply > U256::from(1000) { U256::from(1000) } else { total_supply };
+        
+        // Iterate through tokens (up to 1000 for demo)
+        let mut i = U256::ZERO;
+        while i < max_check {
+            if let Ok(token_owner) = self.erc721.owner_of(i) {
                 if token_owner == owner {
-                    tokens.push(token_id_u256);
+                    tokens.push(i);
                 }
             }
+            i += U256::from(1);
         }
         
         Ok(tokens)
     }
 
     /// Mints an NFT, but does not call onErc712Received
+    /// Enforces 1-ticket-per-wallet limit
     pub fn mint(&mut self) -> Result<(), Vec<u8>> {
         let minter = msg::sender();
+        
+        // Check 1-ticket-per-wallet limit
+        if self.has_ticket.get(minter) {
+            return Err(EventTicketNFTError::AlreadyHasTicket(AlreadyHasTicket { wallet: minter }).into());
+        }
+        
         self.erc721.mint(minter)?;
+        self.has_ticket.insert(minter, true);
         Ok(())
     }
 
     /// Mints an NFT to the specified address, and does not call onErc712Received
+    /// Enforces 1-ticket-per-wallet limit
     pub fn mint_to(&mut self, to: Address) -> Result<(), Vec<u8>> {
+        // Check 1-ticket-per-wallet limit
+        if self.has_ticket.get(to) {
+            return Err(EventTicketNFTError::AlreadyHasTicket(AlreadyHasTicket { wallet: to }).into());
+        }
+        
         self.erc721.mint(to)?;
+        self.has_ticket.insert(to, true);
         Ok(())
     }
 
     /// Mints an NFT and calls onErc712Received with empty data
     pub fn safe_mint(&mut self, to: Address) -> Result<(), Vec<u8>> {
+        // Check 1-ticket-per-wallet limit for safe mint too
+        if self.has_ticket.get(to) {
+            return Err(EventTicketNFTError::AlreadyHasTicket(AlreadyHasTicket { wallet: to }).into());
+        }
+        
         Erc721::safe_mint(self, to, Vec::new())?;
+        self.has_ticket.insert(to, true);
         Ok(())
     }
 
-    /// Burns an NFT
+    /// Burns an NFT and clears has_ticket flag
     pub fn burn(&mut self, token_id: U256) -> Result<(), Vec<u8>> {
+        // Get owner before burning
+        let owner = self.erc721.owner_of(token_id).map_err(|e| e)?;
+        
         // This function checks that msg::sender() owns the specified token_id
         self.erc721.burn(msg::sender(), token_id)?;
+        
+        // Clear has_ticket flag so owner can mint again
+        self.has_ticket.insert(owner, false);
+        
         Ok(())
     }
 }
