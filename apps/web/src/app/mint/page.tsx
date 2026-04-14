@@ -48,7 +48,7 @@ export default function MintPage() {
         seatInfo: selectedSeat,
         isUsed: false,
         usedAt: BigInt(0),
-        originalOwner: '0x0000000000000000000000000000000000000000',
+        originalOwner: useTicketContract().address || '0xSimulatedAddress',
       });
     } else {
       setMintStatus('error');
@@ -189,7 +189,9 @@ export default function MintPage() {
                     </button>
 
                     <p className="text-[10px] text-forge-muted text-center">
-                      Transaction will be sent to Arbitrum Sepolia testnet
+                      {useTicketContract().isSimulated 
+                        ? 'Simulated transaction (Simulation Mode Active)' 
+                        : 'Transaction will be sent to Arbitrum Sepolia testnet'}
                     </p>
                   </div>
                 ) : (

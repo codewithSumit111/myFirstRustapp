@@ -68,8 +68,13 @@ export function DashboardStats() {
       </div>
       
       <div className="text-center mb-8">
-        <h2 className="text-sm font-semibold text-forge-muted uppercase tracking-wider">
+        <h2 className="text-sm font-semibold text-forge-muted uppercase tracking-wider flex items-center justify-center gap-2">
           Live Event Statistics
+          {useTicketContract().isSimulated && (
+            <span className="px-2 py-0.5 rounded-full bg-accent-amber/10 text-accent-amber text-[10px] border border-accent-amber/20">
+              Simulation Mode
+            </span>
+          )}
         </h2>
       </div>
 

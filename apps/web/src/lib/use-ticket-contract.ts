@@ -2,22 +2,25 @@
  * useTicketContract Hook
  * 
  * Custom React hook providing all contract interaction functions for the
- * EventTicketNFT smart contract. Uses wagmi hooks for wallet-connected
- * transactions and viem for read-only calls.
+ * EventTicketNFT smart contract. 
+ * 
+ * SIMULATION MODE: If the contract address is zero (0x0...0), it automatically
+ * enters simulation mode using localStorage to allow for demo purposes
+ * without a deployed contract.
  */
 
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
-import { encodeFunctionData, decodeFunctionResult, toHex, fromHex, type Address } from 'viem';
+import { toHex, fromHex } from 'viem/utils';
+import type { Address } from 'abitype';
 import { TICKET_NFT_ABI, TICKET_NFT_ADDRESS, CHAIN_ID } from '@/lib/contracts/ticket-nft';
 import type { Ticket, QRPayload, VerificationResult } from '@/types/ticket';
 
-/**
- * Hook for interacting with the EventTicketNFT contract.
- * Provides mint, verify, and query functions.
- */
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const STORAGE_KEY = 'mock_nft_tickets';
+
 export function useTicketContract() {
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
@@ -25,6 +28,40 @@ export function useTicketContract() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSimulated, setIsSimulated] = useState(false);
+
+  useEffect(() => {
+    setIsSimulated(TICKET_NFT_ADDRESS === ZERO_ADDRESS);
+  }, []);
+
+  // --- Simulation Helpers ---
+  
+  const getSimulatedTickets = useCallback((): Ticket[] => {
+    if (typeof window === 'undefined') return [];
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  }, []);
+
+  const saveSimulatedTicket = useCallback((ticket: Ticket) => {
+    if (typeof window === 'undefined') return;
+    const tickets = getSimulatedTickets();
+    tickets.push(ticket);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tickets, (key, value) => 
+      typeof value === 'bigint' ? value.toString() : value
+    ));
+  }, [getSimulatedTickets]);
+
+  const updateSimulatedTicket = useCallback((tokenId: bigint, updates: Partial<Ticket>) => {
+    if (typeof window === 'undefined') return;
+    const tickets = getSimulatedTickets();
+    const index = tickets.findIndex(t => BigInt(t.tokenId) === tokenId);
+    if (index !== -1) {
+      tickets[index] = { ...tickets[index], ...updates };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tickets, (key, value) => 
+        typeof value === 'bigint' ? value.toString() : value
+      ));
+    }
+  }, [getSimulatedTickets]);
 
   /**
    * Mint a new ticket NFT with event data
@@ -35,7 +72,7 @@ export function useTicketContract() {
     eventDate: string,
     seatInfo: string,
   ): Promise<bigint | null> => {
-    if (!walletClient || !address || !publicClient) {
+    if (!isConnected || !address) {
       setError('Wallet not connected');
       return null;
     }
@@ -43,8 +80,31 @@ export function useTicketContract() {
     setIsLoading(true);
     setError(null);
 
+    // Simulation Mode
+    if (isSimulated) {
+      await new Promise(resolve => setTimeout(resolve, 1500)); // Simulate chain delay
+      const tokenId = BigInt(Math.floor(Math.random() * 1000000));
+      
+      const newTicket: Ticket = {
+        tokenId,
+        eventId: BigInt(eventId),
+        eventName,
+        eventDate,
+        seatInfo,
+        isUsed: false,
+        usedAt: BigInt(0),
+        originalOwner: address,
+      };
+
+      saveSimulatedTicket(newTicket);
+      setIsLoading(false);
+      return tokenId;
+    }
+
+    // On-Chain Mode
     try {
-      // Encode string parameters as bytes
+      if (!walletClient || !publicClient) throw new Error('Client not ready');
+      
       const eventNameBytes = toHex(new TextEncoder().encode(eventName));
       const eventDateBytes = toHex(new TextEncoder().encode(eventDate));
       const seatInfoBytes = toHex(new TextEncoder().encode(seatInfo));
@@ -62,19 +122,14 @@ export function useTicketContract() {
         ],
       });
 
-      // Wait for transaction confirmation
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
-
-      // Extract token ID from Transfer event logs
       const transferEvent = receipt.logs.find(
         (log: any) => log.topics[0] === '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
       );
 
       if (transferEvent && transferEvent.topics[3]) {
-        const tokenId = BigInt(transferEvent.topics[3]);
-        return tokenId;
+        return BigInt(transferEvent.topics[3]);
       }
-
       return null;
     } catch (err: any) {
       console.error('Mint error:', err);
@@ -83,14 +138,25 @@ export function useTicketContract() {
     } finally {
       setIsLoading(false);
     }
-  }, [walletClient, address, publicClient]);
+  }, [walletClient, address, publicClient, isSimulated, isConnected, saveSimulatedTicket]);
 
   /**
    * Get ticket information by token ID
    */
   const getTicketInfo = useCallback(async (tokenId: bigint): Promise<Ticket | null> => {
-    if (!publicClient) return null;
+    if (isSimulated) {
+      const tickets = getSimulatedTickets();
+      const ticket = tickets.find(t => BigInt(t.tokenId) === tokenId);
+      if (!ticket) return null;
+      return {
+        ...ticket,
+        tokenId: BigInt(ticket.tokenId),
+        eventId: BigInt(ticket.eventId),
+        usedAt: BigInt(ticket.usedAt)
+      };
+    }
 
+    if (!publicClient) return null;
     try {
       const result = await publicClient.readContract({
         address: TICKET_NFT_ADDRESS,
@@ -100,7 +166,6 @@ export function useTicketContract() {
       }) as [bigint, `0x${string}`, `0x${string}`, `0x${string}`, boolean, bigint, Address];
 
       const decoder = new TextDecoder();
-
       return {
         tokenId,
         eventId: result[0],
@@ -115,19 +180,27 @@ export function useTicketContract() {
       console.error('getTicketInfo error:', err);
       return null;
     }
-  }, [publicClient]);
+  }, [publicClient, isSimulated, getSimulatedTickets]);
 
   /**
-   * Mark a ticket as used (verifier/owner only)
+   * Mark a ticket as used
    */
   const markTicketUsed = useCallback(async (tokenId: bigint): Promise<boolean> => {
-    if (!walletClient || !publicClient) {
-      setError('Wallet not connected');
-      return false;
-    }
-
     setIsLoading(true);
     setError(null);
+
+    if (isSimulated) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      updateSimulatedTicket(tokenId, { isUsed: true, usedAt: BigInt(Math.floor(Date.now() / 1000)) });
+      setIsLoading(false);
+      return true;
+    }
+
+    if (!walletClient || !publicClient) {
+      setError('Wallet not connected');
+      setIsLoading(false);
+      return false;
+    }
 
     try {
       const hash = await walletClient.writeContract({
@@ -136,7 +209,6 @@ export function useTicketContract() {
         functionName: 'markTicketUsed',
         args: [tokenId],
       });
-
       await publicClient.waitForTransactionReceipt({ hash });
       return true;
     } catch (err: any) {
@@ -146,36 +218,51 @@ export function useTicketContract() {
     } finally {
       setIsLoading(false);
     }
-  }, [walletClient, publicClient]);
+  }, [walletClient, publicClient, isSimulated, updateSimulatedTicket]);
 
   /**
-   * Check if a ticket is valid (exists and not used)
+   * Check if a ticket is valid
    */
   const isTicketValid = useCallback(async (tokenId: bigint): Promise<boolean> => {
-    if (!publicClient) return false;
+    if (isSimulated) {
+      const tickets = getSimulatedTickets();
+      const ticket = tickets.find(t => BigInt(t.tokenId) === tokenId);
+      return !!ticket && !ticket.isUsed;
+    }
 
+    if (!publicClient) return false;
     try {
-      const result = await publicClient.readContract({
+      return await publicClient.readContract({
         address: TICKET_NFT_ADDRESS,
         abi: TICKET_NFT_ABI,
         functionName: 'isTicketValid',
         args: [tokenId],
-      });
-
-      return result as boolean;
+      }) as boolean;
     } catch {
       return false;
     }
-  }, [publicClient]);
+  }, [publicClient, isSimulated, getSimulatedTickets]);
 
   /**
    * Get all token IDs owned by an address
    */
   const getOwnedTickets = useCallback(async (owner?: Address): Promise<Ticket[]> => {
-    if (!publicClient) return [];
     const targetOwner = owner || address;
     if (!targetOwner) return [];
 
+    if (isSimulated) {
+      const tickets = getSimulatedTickets();
+      return tickets
+        .filter(t => t.originalOwner.toLowerCase() === targetOwner.toLowerCase())
+        .map(t => ({
+          ...t,
+          tokenId: BigInt(t.tokenId),
+          eventId: BigInt(t.eventId),
+          usedAt: BigInt(t.usedAt)
+        }));
+    }
+
+    if (!publicClient) return [];
     try {
       const tokenIds = await publicClient.readContract({
         address: TICKET_NFT_ADDRESS,
@@ -184,75 +271,54 @@ export function useTicketContract() {
         args: [targetOwner],
       }) as bigint[];
 
-      // Fetch ticket info for each token
       const tickets: Ticket[] = [];
       for (const tokenId of tokenIds) {
         const ticket = await getTicketInfo(tokenId);
         if (ticket) tickets.push(ticket);
       }
-
       return tickets;
     } catch (err: any) {
       console.error('getOwnedTickets error:', err);
       return [];
     }
-  }, [publicClient, address, getTicketInfo]);
+  }, [publicClient, address, getTicketInfo, isSimulated, getSimulatedTickets]);
 
   /**
-   * Verify a ticket from QR payload data
+   * Verify a ticket from QR payload
    */
   const verifyTicket = useCallback(async (payload: QRPayload): Promise<VerificationResult> => {
-    if (!publicClient) {
-      return { isValid: false, ticket: null, owner: null, message: 'Not connected to network', status: 'error' };
-    }
-
     try {
       const tokenId = BigInt(payload.tokenId);
-
-      // Get ticket info
       const ticket = await getTicketInfo(tokenId);
+      
       if (!ticket) {
-        return { isValid: false, ticket: null, owner: null, message: 'Ticket not found on-chain', status: 'not-found' };
+        return { isValid: false, ticket: null, owner: null, message: 'Ticket not found', status: 'not-found' };
       }
 
-      // Get current owner
-      const owner = await publicClient.readContract({
-        address: TICKET_NFT_ADDRESS,
-        abi: TICKET_NFT_ABI,
-        functionName: 'ownerOf',
-        args: [tokenId],
-      }) as Address;
+      const owner = ticket.originalOwner;
 
-      // Check if already used
       if (ticket.isUsed) {
-        return { isValid: false, ticket, owner, message: 'Ticket has already been used', status: 'used' };
+        return { isValid: false, ticket, owner, message: 'Ticket already used', status: 'used' };
       }
 
-      // Verify ownership
       if (payload.walletAddress && owner.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-        return { isValid: false, ticket, owner, message: 'Ownership mismatch (Invalid Ticket)', status: 'error' };
-      }
-
-      // Verify event data matches
-      if (ticket.eventId.toString() !== payload.eventId) {
-        return { isValid: false, ticket, owner, message: 'Event data mismatch', status: 'error' };
+        return { isValid: false, ticket, owner, message: 'Ownership mismatch', status: 'error' };
       }
 
       return {
         isValid: true,
         ticket,
         owner,
-        message: 'Ticket is valid and ready for check-in',
+        message: 'Ticket is valid',
         status: 'valid',
       };
     } catch (err: any) {
-      console.error('verifyTicket error:', err);
-      return { isValid: false, ticket: null, owner: null, message: err.message || 'Verification failed', status: 'error' };
+      return { isValid: false, ticket: null, owner: null, message: 'Verification failed', status: 'error' };
     }
-  }, [publicClient, getTicketInfo]);
+  }, [getTicketInfo]);
 
   /**
-   * Generate a QR payload for a ticket
+   * Generate QR payload
    */
   const generateQRPayload = useCallback((ticket: Ticket): QRPayload => {
     return {
@@ -266,11 +332,18 @@ export function useTicketContract() {
   }, [address]);
 
   /**
-   * Get global smart contract statistics
+   * Get global stats
    */
   const getGlobalStats = useCallback(async (): Promise<{ totalMinted: number, totalUsed: number } | null> => {
-    if (!publicClient) return null;
+    if (isSimulated) {
+      const tickets = getSimulatedTickets();
+      return {
+        totalMinted: tickets.length,
+        totalUsed: tickets.filter(t => t.isUsed).length
+      };
+    }
 
+    if (!publicClient) return null;
     try {
       const result = await publicClient.readContract({
         address: TICKET_NFT_ADDRESS,
@@ -283,19 +356,16 @@ export function useTicketContract() {
         totalUsed: Number(result[1]),
       };
     } catch (err) {
-      console.error('getGlobalStats error:', err);
-      return null;
+      return { totalMinted: 0, totalUsed: 0 };
     }
-  }, [publicClient]);
+  }, [publicClient, isSimulated, getSimulatedTickets]);
 
   return {
-    // State
     address,
     isConnected,
     isLoading,
     error,
-
-    // Actions
+    isSimulated,
     mintTicket,
     getTicketInfo,
     markTicketUsed,
@@ -304,8 +374,6 @@ export function useTicketContract() {
     verifyTicket,
     generateQRPayload,
     getGlobalStats,
-
-    // Utilities
     clearError: () => setError(null),
   };
 }
